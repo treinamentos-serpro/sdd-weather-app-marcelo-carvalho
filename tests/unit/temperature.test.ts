@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  toFahrenheit,
   convertTemperature,
   formatTemperature,
+  toFahrenheit,
   unitLabel,
 } from '../../src/lib/temperature';
 
@@ -16,10 +16,13 @@ describe('temperature', () => {
   it('convertTemperature respeita a unidade', () => {
     expect(convertTemperature(20, 'celsius')).toBe(20);
     expect(convertTemperature(0, 'fahrenheit')).toBe(32);
+    expect(convertTemperature(100, 'fahrenheit')).toBe(212);
   });
 
   it('formata com símbolo de grau e arredondamento', () => {
     expect(formatTemperature(20.4, 'celsius')).toBe('20°');
+    expect(formatTemperature(20.6, 'celsius')).toBe('21°');
+    expect(formatTemperature(10, 'fahrenheit')).toBe('50°');
     expect(formatTemperature(0, 'fahrenheit')).toBe('32°');
   });
 

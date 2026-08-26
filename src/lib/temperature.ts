@@ -22,6 +22,11 @@ export function formatTemperature(celsius: number, unit: Unit): string {
   return `${value}°`;
 }
 
+export function formatTemperatureWithUnit(celsius: number, unit: Unit): string {
+  const value = Math.round(convertTemperature(celsius, unit));
+  return `${value}${unitLabel(unit)}`;
+}
+
 /** Rótulo curto da unidade atual (°C / °F). */
 export function unitLabel(unit: Unit): string {
   return unit === 'fahrenheit' ? '°F' : '°C';
