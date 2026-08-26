@@ -1,13 +1,14 @@
-import { useState } from 'react';
-import type { Unit } from './types/weather';
-import { useWeather } from './hooks/useWeather';
-import SearchBar from './components/SearchBar';
-import UnitToggle from './components/UnitToggle';
+import { useEffect, useRef, useState } from 'react';
 import CurrentWeather from './components/CurrentWeather';
 import ForecastList from './components/ForecastList';
-import LoadingState from './components/states/LoadingState';
-import ErrorState from './components/states/ErrorState';
+import SearchBar from './components/SearchBar';
+import SearchResults from './components/SearchResults';
 import EmptyState from './components/states/EmptyState';
+import ErrorState from './components/states/ErrorState';
+import LoadingState from './components/states/LoadingState';
+import UnitToggle from './components/UnitToggle';
+import { useWeather } from './hooks/useWeather';
+import type { Unit } from './types/weather';
 
 /**
  * WeatherView — aplicação completa de previsão do tempo.
@@ -16,8 +17,27 @@ import EmptyState from './components/states/EmptyState';
  * Copilot, do briefing à entrega.
  */
 export default function App() {
-  const { status, data, error, query, search, retry } = useWeather();
-  const [unit, setUnit] = useState<Unit>('celsius');
+  const { status, data, error, cities, query, search, selectCity, retry } = useWeather();
+  const [unit, setUnit] = useState<Unit>(() => {
+    try {
+      return localStorage.getItem('weather-unit') === 'fahrenheit' ? 'fahrenheit' : 'celsius';
+    } catch {
+      return 'celsius';
+    }
+  });
+  const mainRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (status === 'success') mainRef.current?.focus();
+  }, [status]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('weather-unit', unit);
+    } catch {
+      return;
+    }
+  }, [unit]);
 
   return (
     <div className="min-h-screen text-white">
@@ -27,7 +47,7 @@ export default function App() {
             <span aria-hidden="true" className="text-2xl text-sun">
               ☀️
             </span>
-            <span className="text-lg font-bold">WeatherView</span>
+            <h1 className="text-lg font-bold">WeatherView</h1>
           </div>
           <div className="flex items-center gap-3">
             <SearchBar onSearch={search} disabled={status === 'loading'} />
@@ -36,7 +56,12 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-8 px-4 py-8">
+      <main
+        ref={mainRef}
+        tabIndex={-1}
+        aria-busy={status === 'loading'}
+        className="mx-auto max-w-5xl space-y-8 px-4 py-8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-400"
+      >
         {status === 'idle' && (
           <EmptyState
             title="Busque uma cidade para começar"
@@ -55,6 +80,8 @@ export default function App() {
 
         {status === 'error' && error && <ErrorState message={error} onRetry={retry} />}
 
+        {status === 'results' && <SearchResults cities={cities} onSelect={selectCity} />}
+
         {status === 'success' && data && (
           <>
             <CurrentWeather city={data.city} current={data.current} unit={unit} />
@@ -63,7 +90,7 @@ export default function App() {
         )}
       </main>
 
-      <footer className="py-8 text-center text-sm text-white/40">
+      <footer className="py-8 text-center text-sm text-white/70">
         Dados por{' '}
         <a
           href="https://open-meteo.com/"

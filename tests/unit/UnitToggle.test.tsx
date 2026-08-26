@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect } from 'vitest';
 import { useState } from 'react';
@@ -13,11 +13,13 @@ const city: City = {
   admin1: 'Washington',
   latitude: 47.6,
   longitude: -122.33,
+  timezone: 'America/Los_Angeles',
 };
 
 const current: CurrentWeatherType = {
   time: '2026-06-16T12:00',
   temperature: 0, // 0°C => 32°F (fácil de verificar)
+  apparentTemperature: 0,
   humidity: 80,
   windSpeed: 10,
   pressure: 1015,
@@ -38,10 +40,11 @@ function Harness() {
 describe('UnitToggle + CurrentWeather', () => {
   it('converte a temperatura ao alternar a unidade', async () => {
     render(<Harness />);
-    expect(screen.getByText('0°')).toBeInTheDocument();
+    const currentWeather = screen.getByRole('region', { name: /clima atual/i });
+    expect(within(currentWeather).getByText('0°C', { selector: 'span' })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: '°F' }));
-    expect(screen.getByText('32°')).toBeInTheDocument();
+    expect(within(currentWeather).getByText('32°F', { selector: 'span' })).toBeInTheDocument();
   });
 
   it('expõe os botões com estado pressionado acessível', () => {

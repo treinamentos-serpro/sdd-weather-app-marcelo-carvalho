@@ -13,6 +13,18 @@ e sem ambiguidades.
 
 > Cole aqui o briefing de negócio.
 
+Entrada — o briefing de negócio
+Sua empresa solicitou uma aplicação de previsão do tempo.
+
+Os usuários devem poder:
+
+Buscar cidades
+Ver o clima atual
+Ver a previsão de 5 dias
+Alternar entre Celsius e Fahrenheit
+Usar em dispositivos móveis
+Analise os requisitos de negócio e identifique: requisitos funcionais, requisitos não-funcionais, riscos e perguntas em aberto.
+
 ## Tarefa
 
 Crie/atualize `specs/weather-app-spec.md` com as seções:

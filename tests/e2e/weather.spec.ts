@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { expect, type Page, test } from '@playwright/test';
 
 const geocoding = {
   results: [
@@ -9,6 +9,7 @@ const geocoding = {
       admin1: 'Washington',
       latitude: 47.6,
       longitude: -122.33,
+      timezone: 'America/Los_Angeles',
     },
   ],
 };
@@ -45,24 +46,86 @@ test('fluxo completo: buscar → clima atual → previsão → trocar unidade', 
 
   await page.getByLabel(/buscar cidade/i).fill('Seattle');
   await page.getByRole('button', { name: /buscar/i }).click();
+  await page.getByRole('button', { name: /Seattle, Washington, Estados Unidos/i }).click();
 
   await expect(page.getByRole('heading', { name: 'Seattle' })).toBeVisible();
   await expect(page.getByRole('region', { name: /previsão de 5 dias/i })).toBeVisible();
 
+  const currentWeather = page.getByRole('region', { name: /clima atual/i });
   // 0°C exibido; após trocar para °F deve virar 32°.
-  await expect(page.getByText('0°').first()).toBeVisible();
+  await expect(currentWeather.getByText('0°C')).toBeVisible();
   await page.getByRole('button', { name: '°F' }).click();
-  await expect(page.getByText('32°').first()).toBeVisible();
+  await expect(currentWeather.getByText('32°F')).toBeVisible();
 });
 
 test('estado vazio quando a cidade não existe', async ({ page }) => {
+  let forecastRequested = false;
   await page.route('**/geocoding-api.open-meteo.com/**', (route) => route.fulfill({ json: {} }));
+  await page.route('**/api.open-meteo.com/**', () => {
+    forecastRequested = true;
+  });
   await page.goto('/');
 
   await page.getByLabel(/buscar cidade/i).fill('xyzxyz');
   await page.getByRole('button', { name: /buscar/i }).click();
 
   await expect(page.getByText(/nenhuma cidade encontrada/i)).toBeVisible();
+  expect(forecastRequested).toBe(false);
+});
+
+test('busca vazia exibe validação sem chamar a API', async ({ page }) => {
+  let geocodingRequested = false;
+  await page.route('**/geocoding-api.open-meteo.com/**', () => {
+    geocodingRequested = true;
+  });
+  await page.goto('/');
+
+  await page.getByRole('button', { name: /buscar/i }).click();
+
+  await expect(page.getByRole('alert')).toHaveText(/informe uma cidade/i);
+  expect(geocodingRequested).toBe(false);
+});
+
+test('preserva caracteres especiais e normaliza espaços na URL de busca', async ({ page }) => {
+  let requestedName = '';
+  await page.route('**/geocoding-api.open-meteo.com/**', async (route) => {
+    requestedName = new URL(route.request().url()).searchParams.get('name') ?? '';
+    await route.fulfill({ json: {} });
+  });
+  await page.goto('/');
+
+  await page.getByLabel(/buscar cidade/i).fill('  São   José-dos-Campos  ');
+  await page.getByRole('button', { name: /buscar/i }).click();
+
+  await expect(page.getByText(/nenhuma cidade encontrada/i)).toBeVisible();
+  expect(requestedName).toBe('São José-dos-Campos');
+});
+
+test('renderiza forecast incompleto com fallbacks seguros', async ({ page }) => {
+  await page.route('**/geocoding-api.open-meteo.com/**', (route) =>
+    route.fulfill({ json: geocoding }),
+  );
+  await page.route('**/api.open-meteo.com/**', (route) =>
+    route.fulfill({
+      json: {
+        current: {},
+        daily: { time: ['2026-06-16'], temperature_2m_max: [null] },
+      },
+    }),
+  );
+  await page.goto('/');
+
+  await page.getByLabel(/buscar cidade/i).fill('Seattle');
+  await page.getByRole('button', { name: /buscar/i }).click();
+  await page.getByRole('button', { name: /Seattle, Washington, Estados Unidos/i }).click();
+
+  await expect(page.getByRole('heading', { name: 'Seattle' })).toBeVisible();
+  await expect(page.getByRole('region', { name: /clima atual/i })).toContainText('Indisponível');
+  await expect(page.getByRole('region', { name: /previsão de 5 dias/i })).toContainText(
+    /parte da previsão.*indisponível/i,
+  );
+  await expect(page.locator('body')).not.toContainText('undefined');
+  await expect(page.locator('body')).not.toContainText('NaN');
 });
 
 test('viewport mobile renderiza o fluxo principal', async ({ page }) => {
@@ -72,5 +135,6 @@ test('viewport mobile renderiza o fluxo principal', async ({ page }) => {
 
   await page.getByLabel(/buscar cidade/i).fill('Seattle');
   await page.getByRole('button', { name: /buscar/i }).click();
+  await page.getByRole('button', { name: /Seattle, Washington, Estados Unidos/i }).click();
   await expect(page.getByRole('heading', { name: 'Seattle' })).toBeVisible();
 });

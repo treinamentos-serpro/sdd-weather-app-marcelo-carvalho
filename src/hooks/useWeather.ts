@@ -1,8 +1,8 @@
-import { useCallback, useState } from 'react';
-import type { City, WeatherData } from '../types/weather';
+import { useCallback, useRef, useState } from 'react';
 import { getWeather, searchCities, WeatherServiceError } from '../services/weatherService';
+import type { City, WeatherData } from '../types/weather';
 
-export type WeatherStatus = 'idle' | 'loading' | 'success' | 'error' | 'empty';
+export type WeatherStatus = 'idle' | 'loading' | 'results' | 'success' | 'error' | 'empty';
 
 interface UseWeatherResult {
   status: WeatherStatus;
@@ -13,6 +13,11 @@ interface UseWeatherResult {
   search: (name: string) => Promise<void>;
   selectCity: (city: City) => Promise<void>;
   retry: () => Promise<void>;
+}
+
+interface WeatherRequest {
+  id: number;
+  controller: AbortController;
 }
 
 /**
@@ -26,45 +31,68 @@ export function useWeather(): UseWeatherResult {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [lastCity, setLastCity] = useState<City | null>(null);
+  const requestId = useRef(0);
+  const activeRequest = useRef<WeatherRequest | null>(null);
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: search inicia o fluxo na montagem; loadWeather é estável
-  const search = useCallback(async (name: string) => {
-    const trimmed = name.trim();
-    setQuery(trimmed);
-    if (!trimmed) return;
+  const startRequest = useCallback(() => {
+    activeRequest.current?.controller.abort();
+    const request = { id: requestId.current + 1, controller: new AbortController() };
+    requestId.current = request.id;
+    activeRequest.current = request;
+    return request;
+  }, []);
 
-    setStatus('loading');
-    setError(null);
-    setCities([]);
-    try {
-      const results = await searchCities(trimmed);
-      if (results.length === 0) {
-        setStatus('empty');
-        return;
+  const isCurrentRequest = useCallback((request: WeatherRequest) => {
+    return activeRequest.current?.id === request.id && !request.controller.signal.aborted;
+  }, []);
+
+  const loadWeather = useCallback(
+    async (city: City, request = startRequest()) => {
+      setStatus('loading');
+      setError(null);
+      setLastCity(city);
+      try {
+        const weather = await getWeather(city, request.controller.signal);
+        if (!isCurrentRequest(request)) return;
+        setData(weather);
+        setStatus('success');
+      } catch (err) {
+        if (!isCurrentRequest(request)) return;
+        setStatus('error');
+        setError(toMessage(err));
       }
-      // Seleciona automaticamente a primeira correspondência, mas mantém a
-      // lista para o usuário trocar.
-      setCities(results);
-      await loadWeather(results[0]);
-    } catch (err) {
-      setStatus('error');
-      setError(toMessage(err));
-    }
-  }, []);
+    },
+    [isCurrentRequest, startRequest],
+  );
 
-  const loadWeather = useCallback(async (city: City) => {
-    setStatus('loading');
-    setError(null);
-    setLastCity(city);
-    try {
-      const weather = await getWeather(city);
-      setData(weather);
-      setStatus('success');
-    } catch (err) {
-      setStatus('error');
-      setError(toMessage(err));
-    }
-  }, []);
+  const search = useCallback(
+    async (name: string) => {
+      const trimmed = name.trim().replace(/\s+/g, ' ');
+      setQuery(trimmed);
+      if (!trimmed) return;
+
+      const request = startRequest();
+      setStatus('loading');
+      setError(null);
+      setCities([]);
+      setLastCity(null);
+      try {
+        const results = await searchCities(trimmed, request.controller.signal);
+        if (!isCurrentRequest(request)) return;
+        if (results.length === 0) {
+          setStatus('empty');
+          return;
+        }
+        setCities(results);
+        setStatus('results');
+      } catch (err) {
+        if (!isCurrentRequest(request)) return;
+        setStatus('error');
+        setError(toMessage(err));
+      }
+    },
+    [isCurrentRequest, startRequest],
+  );
 
   const selectCity = useCallback(
     async (city: City) => {

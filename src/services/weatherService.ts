@@ -3,105 +3,149 @@ import type { City, CurrentWeather, ForecastDay, WeatherData } from '../types/we
 const GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
 const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const REQUEST_TIMEOUT_MS = 10_000;
+type WeatherErrorKind = 'network' | 'timeout' | 'http' | 'invalid-response';
 
 /** Erro tipado da camada de dados, com mensagem amigável ao usuário. */
 export class WeatherServiceError extends Error {
-  constructor(message: string) {
+  readonly kind: WeatherErrorKind;
+
+  constructor(message: string, kind: WeatherErrorKind) {
     super(message);
     this.name = 'WeatherServiceError';
+    this.kind = kind;
   }
 }
 
 /** Faz um fetch com timeout via AbortController. */
-async function fetchWithTimeout(url: string): Promise<Response> {
+async function fetchWithTimeout(url: string, signal?: AbortSignal): Promise<Response> {
+  if (signal?.aborted) {
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  }
+
   const controller = new AbortController();
+  const abortRequest = () => controller.abort();
+  signal?.addEventListener('abort', abortRequest, { once: true });
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     return await fetch(url, { signal: controller.signal });
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') {
-      throw new WeatherServiceError('A requisição demorou demais. Tente novamente.');
+      if (signal?.aborted) throw err;
+      throw new WeatherServiceError('A requisição demorou demais. Tente novamente.', 'timeout');
     }
-    throw new WeatherServiceError('Falha de rede. Verifique sua conexão.');
+    throw new WeatherServiceError('Falha de rede. Verifique sua conexão.', 'network');
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', abortRequest);
   }
 }
 
-interface GeocodingResult {
-  id: number;
-  name: string;
-  country?: string;
-  admin1?: string;
-  latitude: number;
-  longitude: number;
+function invalidResponse(): WeatherServiceError {
+  return new WeatherServiceError('A resposta do serviço é inválida. Tente novamente.', 'invalid-response');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function getJsonArray(record: Record<string, unknown>, field: string): unknown[] {
+  const value = record[field];
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw invalidResponse();
+  return value;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    throw invalidResponse();
+  }
 }
 
 /**
  * Busca cidades por nome (geocoding). Retorna lista vazia quando não há
  * resultados — o estado "vazio" é tratado pela camada de UI.
  */
-export async function searchCities(name: string): Promise<City[]> {
-  const query = name.trim();
+export async function searchCities(name: string, signal?: AbortSignal): Promise<City[]> {
+  const query = name.trim().replace(/\s+/g, ' ');
   if (!query) return [];
 
   const url = `${GEOCODING_URL}?name=${encodeURIComponent(query)}&count=5&language=pt&format=json`;
-  const res = await fetchWithTimeout(url);
+  const res = await fetchWithTimeout(url, signal);
   if (!res.ok) {
-    throw new WeatherServiceError('Não foi possível buscar a cidade. Tente novamente.');
+    throw new WeatherServiceError('Não foi possível buscar a cidade. Tente novamente.', 'http');
   }
 
-  const data = (await res.json()) as { results?: GeocodingResult[] };
-  if (!data.results) return [];
+  const data = await readJson(res);
+  if (!isRecord(data)) throw invalidResponse();
+  if (data.results === undefined || data.results === null) return [];
+  if (!Array.isArray(data.results)) throw invalidResponse();
 
-  return data.results.map((r) => ({
-    id: r.id,
-    name: r.name,
-    country: r.country ?? '',
-    admin1: r.admin1,
-    latitude: r.latitude,
-    longitude: r.longitude,
-  }));
+  return data.results.flatMap((result) => {
+    if (!isRecord(result)) return [];
+    const id = asNumber(result.id);
+    const cityName = asString(result.name);
+    const latitude = asNumber(result.latitude);
+    const longitude = asNumber(result.longitude);
+    const timezone = asString(result.timezone);
+    if (id === null || cityName === null || latitude === null || longitude === null || timezone === null) {
+      return [];
+    }
+
+    return [
+      {
+        id,
+        name: cityName,
+        country: asString(result.country) ?? '',
+        admin1: asString(result.admin1) ?? undefined,
+        latitude,
+        longitude,
+        timezone,
+      },
+    ];
+  }).slice(0, 5);
 }
 
-interface ForecastResponse {
-  current?: {
-    time: string;
-    temperature_2m: number;
-    relative_humidity_2m: number;
-    wind_speed_10m: number;
-    surface_pressure: number;
-    precipitation: number;
-    weather_code: number;
-  };
-  daily?: {
-    time: string[];
-    weather_code: number[];
-    temperature_2m_max: number[];
-    temperature_2m_min: number[];
-    precipitation_probability_max: (number | null)[];
-  };
-}
-
-function mapCurrent(c: NonNullable<ForecastResponse['current']>): CurrentWeather {
+function mapCurrent(value: unknown): CurrentWeather | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) throw invalidResponse();
   return {
-    time: c.time,
-    temperature: c.temperature_2m,
-    humidity: c.relative_humidity_2m,
-    windSpeed: c.wind_speed_10m,
-    pressure: c.surface_pressure,
-    precipitation: c.precipitation,
-    weatherCode: c.weather_code,
+    time: asString(value.time),
+    temperature: asNumber(value.temperature_2m),
+    apparentTemperature: asNumber(value.apparent_temperature),
+    humidity: asNumber(value.relative_humidity_2m),
+    windSpeed: asNumber(value.wind_speed_10m),
+    pressure: asNumber(value.surface_pressure),
+    precipitation: asNumber(value.precipitation),
+    weatherCode: asNumber(value.weather_code),
   };
 }
 
-function mapForecast(d: NonNullable<ForecastResponse['daily']>): ForecastDay[] {
-  return d.time.map((date, i) => ({
-    date,
-    weatherCode: d.weather_code[i],
-    max: d.temperature_2m_max[i],
-    min: d.temperature_2m_min[i],
-    precipitationProbability: d.precipitation_probability_max[i] ?? 0,
+function mapForecast(value: unknown): ForecastDay[] | null {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) throw invalidResponse();
+  const dates = getJsonArray(value, 'time');
+  const weatherCodes = getJsonArray(value, 'weather_code');
+  const maxTemperatures = getJsonArray(value, 'temperature_2m_max');
+  const minTemperatures = getJsonArray(value, 'temperature_2m_min');
+  const precipitationProbabilities = getJsonArray(value, 'precipitation_probability_max');
+  const length = Math.min(dates.length, 5);
+
+  return Array.from({ length }, (_, i) => ({
+    date: asString(dates[i]),
+    weatherCode: asNumber(weatherCodes[i]),
+    max: asNumber(maxTemperatures[i]),
+    min: asNumber(minTemperatures[i]),
+    precipitationProbability: asNumber(precipitationProbabilities[i]),
   }));
 }
 
@@ -109,30 +153,29 @@ function mapForecast(d: NonNullable<ForecastResponse['daily']>): ForecastDay[] {
  * Busca o clima atual e a previsão de 5 dias para uma cidade.
  * Temperaturas retornam em Celsius (conversão fica na UI).
  */
-export async function getWeather(city: City): Promise<WeatherData> {
+export async function getWeather(city: City, signal?: AbortSignal): Promise<WeatherData> {
   const params = new URLSearchParams({
     latitude: String(city.latitude),
     longitude: String(city.longitude),
     current:
-      'temperature_2m,relative_humidity_2m,wind_speed_10m,surface_pressure,precipitation,weather_code',
-    daily:
-      'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
+      'temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,surface_pressure,precipitation,weather_code',
+    daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
     forecast_days: '5',
     timezone: 'auto',
   });
 
-  const res = await fetchWithTimeout(`${FORECAST_URL}?${params.toString()}`);
+  const res = await fetchWithTimeout(`${FORECAST_URL}?${params.toString()}`, signal);
   if (!res.ok) {
-    throw new WeatherServiceError('Não foi possível carregar o clima. Tente novamente.');
+    throw new WeatherServiceError('Não foi possível carregar o clima. Tente novamente.', 'http');
   }
 
-  const data = (await res.json()) as ForecastResponse;
-  if (!data.current || !data.daily) {
-    throw new WeatherServiceError('Resposta de clima incompleta. Tente novamente.');
-  }
+  const data = await readJson(res);
+  if (!isRecord(data)) throw invalidResponse();
+  const timezone = data.timezone === undefined || data.timezone === null ? city.timezone : asString(data.timezone);
+  if (timezone === null) throw invalidResponse();
 
   return {
-    city,
+    city: { ...city, timezone },
     current: mapCurrent(data.current),
     forecast: mapForecast(data.daily),
   };
